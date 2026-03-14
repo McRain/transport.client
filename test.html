@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WebTransport Тест — Default Room</title>
+  <title>WebTransport Тест — Default Room v3</title>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -161,12 +163,11 @@ async function startTest() {
     // Слушаем datagram-ы (управление + данные от пира)
     listenDatagrams()
 
-    // При закрытии соединения
-    transport.closed.then(() => {
-      logMsg('Соединение закрыто сервером')
+    transport.closed.then((info) => {
+      logMsg('Соединение закрыто: code=' + (info.closeCode || 'n/a') + ' reason=' + (info.reason || 'n/a'))
       cleanup()
     }).catch(err => {
-      logMsg('Разрыв соединения: ' + err.message)
+      logMsg('<span style="color:#f66">Разрыв: ' + (err.message || err) + '</span>')
       cleanup()
     })
 
@@ -189,10 +190,12 @@ async function listenDatagrams() {
   try {
     while (true) {
       const { value, done } = await reader.read()
-      if (done) break
+      if (done) { logMsg('Datagram reader done'); break }
       handleDatagram(value)
     }
-  } catch { /* closed */ }
+  } catch (err) {
+    logMsg('<span style=\"color:#f66\">Datagram read error: ' + (err.message || err) + '</span>')
+  }
 }
 
 function handleDatagram(data) {
@@ -256,6 +259,9 @@ async function startDataExchange() {
 
   logMsg(`Отправка datagrams: ${formatBytes(chunkSize)} каждые ${intervalMs} мс`)
 
+  // Останавливаем keepalive — отправка данных сама держит соединение
+  if (keepAliveTimer) { clearInterval(keepAliveTimer); keepAliveTimer = null }
+
   sending = true
   ;(async function sendLoop() {
     while (sending) {
@@ -269,7 +275,8 @@ async function startDataExchange() {
         if (intervalMs > 0) {
           await new Promise(r => setTimeout(r, intervalMs))
         }
-      } catch {
+      } catch (err) {
+        logMsg('<span style="color:#f66">Send error: ' + (err.message || err) + '</span>')
         sending = false
       }
     }
