@@ -106,6 +106,20 @@ let startTime = null
 let bytesSent = 0
 let bytesReceived = 0
 
+function trySendDatagram(data) {
+  if (!datagramWriter) return false
+
+  const desiredSize = datagramWriter.desiredSize
+  if (desiredSize !== null && desiredSize <= 0) {
+    return false
+  }
+
+  datagramWriter.write(data).catch(() => {
+    // transport already closed
+  })
+  return true
+}
+
 // ─── UI helpers ───
 function logMsg(msg) {
   const el = document.getElementById('log')
@@ -155,9 +169,8 @@ async function startTest() {
     datagramWriter = transport.datagrams.writable.getWriter()
 
     // Keep-alive каждые 3 секунды
-    keepAliveTimer = setInterval(async () => {
-      try { await datagramWriter.write(new Uint8Array([MSG_KEEPALIVE])) }
-      catch { /* closed */ }
+    keepAliveTimer = setInterval(() => {
+      trySendDatagram(new Uint8Array([MSG_KEEPALIVE]))
     }, 3_000)
 
     // Слушаем datagram-ы (управление + данные от пира)
@@ -259,9 +272,6 @@ async function startDataExchange() {
 
   logMsg(`Отправка datagrams: ${formatBytes(chunkSize)} каждые ${intervalMs} мс`)
 
-  // Останавливаем keepalive — отправка данных сама держит соединение
-  if (keepAliveTimer) { clearInterval(keepAliveTimer); keepAliveTimer = null }
-
   sending = true
   ;(async function sendLoop() {
     while (sending) {
@@ -270,8 +280,9 @@ async function startDataExchange() {
         const msg = new Uint8Array(1 + chunkSize)
         msg[0] = MEDIA_VIDEO
         crypto.getRandomValues(msg.subarray(1))
-        await datagramWriter.write(msg)
-        bytesSent += msg.byteLength
+        if (trySendDatagram(msg)) {
+          bytesSent += msg.byteLength
+        }
         if (intervalMs > 0) {
           await new Promise(r => setTimeout(r, intervalMs))
         }
