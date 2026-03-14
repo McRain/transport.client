@@ -1,13 +1,62 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>QUIC Видеозвонки</title>
-    <script type="module" crossorigin src="/assets/index-fk94v0xB.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-D1YXw4UY.css">
-  </head>
-  <body>
-    <div id="app"></div>
-  </body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebTransport Test</title>
+  <link rel="stylesheet" href="client.css">
+</head>
+<body>
+  <div id="top">
+    <div id="explanation">
+      Тестовый клиент WebTransport over HTTP/3.
+      <ul>
+        <li>Подключается к серверу <code>transport.reneos.com:4433</code></li>
+        <li>Отправляет данные — получает ответ с длиной отправленного сообщения в байтах</li>
+        <li>Поддержка datagram, однонаправленных и двунаправленных потоков</li>
+      </ul>
+    </div>
+    <div id="tool">
+      <h1>WebTransport Test Client</h1>
+
+      <div>
+        <h2>Подключение</h2>
+        <div class="input-line">
+          <label for="url">URL:</label>
+          <input type="text" id="url"
+                 value="https://transport.reneos.com:4433/counter">
+          <input type="button" id="connect" value="Connect" onclick="connect()">
+        </div>
+      </div>
+
+      <div>
+        <h2>Отправка данных</h2>
+        <form name="sending">
+          <textarea name="data" id="data" placeholder="Введите текст для отправки..."></textarea>
+          <div>
+            <input type="radio" name="sendtype" value="datagram"
+                   id="datagram" checked>
+            <label for="datagram">Datagram</label>
+          </div>
+          <div>
+            <input type="radio" name="sendtype" value="unidi" id="unidi-stream">
+            <label for="unidi-stream">Unidirectional stream</label>
+          </div>
+          <div>
+            <input type="radio" name="sendtype" value="bidi" id="bidi-stream">
+            <label for="bidi-stream">Bidirectional stream</label>
+          </div>
+          <input type="button" id="send" name="send" value="Отправить"
+                 disabled onclick="sendData()">
+        </form>
+      </div>
+
+      <div>
+        <h2>Лог событий</h2>
+        <ul id="event-log"></ul>
+      </div>
+    </div>
+  </div>
+  <script src="client.js"></script>
+</body>
 </html>
