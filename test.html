@@ -105,17 +105,31 @@ let metricsTimer = null
 let startTime = null
 let bytesSent = 0
 let bytesReceived = 0
+let maxDatagramSize = null
+let sendErrorCount = 0
+
+function logSendError(err) {
+  sendErrorCount += 1
+  if (sendErrorCount <= 5) {
+    logMsg('<span style="color:#f66">Send error: ' + ((err && err.message) || err) + '</span>')
+  }
+}
 
 function trySendDatagram(data) {
   if (!datagramWriter) return false
+
+  if (maxDatagramSize && data.byteLength > maxDatagramSize) {
+    logSendError(`datagram ${data.byteLength} B exceeds maxDatagramSize ${maxDatagramSize} B`)
+    return false
+  }
 
   const desiredSize = datagramWriter.desiredSize
   if (desiredSize !== null && desiredSize <= 0) {
     return false
   }
 
-  datagramWriter.write(data).catch(() => {
-    // transport already closed
+  datagramWriter.write(data).catch((err) => {
+    logSendError(err)
   })
   return true
 }
@@ -167,6 +181,9 @@ async function startTest() {
     logMsg('Подключено к серверу')
 
     datagramWriter = transport.datagrams.writable.getWriter()
+    maxDatagramSize = transport.datagrams.maxDatagramSize || null
+    sendErrorCount = 0
+    logMsg('maxDatagramSize: ' + (maxDatagramSize || 'n/a') + ' B')
 
     // Keep-alive каждые 3 секунды
     keepAliveTimer = setInterval(() => {
@@ -261,14 +278,19 @@ async function startDataExchange() {
 
   metricsTimer = setInterval(updateMetrics, 500)
 
-  const chunkSize = Math.min(
-    Math.max(parseInt(document.getElementById('chunkSize').value) || 1000, 64),
-    1200
-  )
+  const requestedChunkSize = Math.min(
+	Math.max(parseInt(document.getElementById('chunkSize').value) || 1000, 64),
+	1200
+	)
+  const chunkSize = maxDatagramSize ? Math.min(requestedChunkSize, Math.max(64, maxDatagramSize - 1)) : requestedChunkSize
   const intervalMs = Math.min(
     Math.max(parseInt(document.getElementById('intervalMs').value) || 100, 10),
     5000
   )
+
+  if (chunkSize !== requestedChunkSize) {
+    logMsg(`Размер чанка уменьшен до ${formatBytes(chunkSize)} по maxDatagramSize`)
+  }
 
   logMsg(`Отправка datagrams: ${formatBytes(chunkSize)} каждые ${intervalMs} мс`)
 
@@ -299,6 +321,7 @@ function cleanup() {
   if (keepAliveTimer) { clearInterval(keepAliveTimer); keepAliveTimer = null }
   sending = false
   if (metricsTimer)   { clearInterval(metricsTimer);   metricsTimer = null }
+  maxDatagramSize = null
   updateMetrics()
   setStatus('Отключено')
   document.getElementById('connectBtn').disabled = false
