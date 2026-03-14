@@ -3,9 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WebTransport Тест — Default Room v3</title>
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <meta http-equiv="Pragma" content="no-cache">
+  <title>WebTransport Тест — Default Room</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -56,14 +54,14 @@
 
 <h1>WebTransport Тест — Default Room</h1>
 
-<div class="controls">
+<div class="controls">v2
   <div>
     <label>Сервер:</label><br>
     <input id="serverUrl" value="https://transport.reneos.com:4433">
   </div>
   <div>
     <label>Размер чанка (байт):</label><br>
-    <input id="chunkSize" class="small" type="number" value="1000" min="64" max="1200">
+    <input id="chunkSize" class="small" type="number" value="4096" min="64" max="1048576">
   </div>
   <div>
     <label>Интервал (мс):</label><br>
@@ -105,6 +103,7 @@ let metricsTimer = null
 let startTime = null
 let bytesSent = 0
 let bytesReceived = 0
+let mediaWriter = null
 let maxDatagramSize = null
 let sendErrorCount = 0
 
@@ -190,14 +189,16 @@ async function startTest() {
       trySendDatagram(new Uint8Array([MSG_KEEPALIVE]))
     }, 3_000)
 
-    // Слушаем datagram-ы (управление + данные от пира)
+    // Слушаем datagram-ы и входящие стримы
     listenDatagrams()
+    listenIncomingStreams()
 
-    transport.closed.then((info) => {
-      logMsg('Соединение закрыто: code=' + (info.closeCode || 'n/a') + ' reason=' + (info.reason || 'n/a'))
+    // При закрытии соединения
+    transport.closed.then(() => {
+      logMsg('Соединение закрыто сервером')
       cleanup()
     }).catch(err => {
-      logMsg('<span style="color:#f66">Разрыв: ' + (err.message || err) + '</span>')
+      logMsg('Разрыв соединения: ' + err.message)
       cleanup()
     })
 
@@ -220,12 +221,10 @@ async function listenDatagrams() {
   try {
     while (true) {
       const { value, done } = await reader.read()
-      if (done) { logMsg('Datagram reader done'); break }
+      if (done) break
       handleDatagram(value)
     }
-  } catch (err) {
-    logMsg('<span style=\"color:#f66\">Datagram read error: ' + (err.message || err) + '</span>')
-  }
+  } catch { /* closed */ }
 }
 
 function handleDatagram(data) {
@@ -234,8 +233,6 @@ function handleDatagram(data) {
   const decoder = new TextDecoder()
 
   switch (type) {
-    case MSG_KEEPALIVE:
-      break
     case MSG_CALL_CREATED: {
       const key = decoder.decode(data.slice(1, 13))
       logMsg('Комната создана, ключ: <b>' + key + '</b>')
@@ -244,7 +241,7 @@ function handleDatagram(data) {
     }
     case MSG_CALL_READY: {
       logMsg('<b>Оба участника подключены — старт обмена!</b>')
-      setStatus('Активный обмен данными (через datagrams)')
+      setStatus('Активный обмен данными')
       startDataExchange()
       break
     }
@@ -259,16 +256,56 @@ function handleDatagram(data) {
       setStatus('Ошибка: ' + msg)
       break
     }
-    default: {
-      // Данные от пира (type >= 0x10)
-      if (type >= 0x10) {
-        bytesReceived += data.byteLength
-      }
-    }
   }
 }
 
-// ─── Отправка данных через datagrams ───
+// ─── Incoming streams (получение данных) ───
+async function listenIncomingStreams() {
+  const reader = transport.incomingUnidirectionalStreams.getReader()
+  try {
+    while (true) {
+      const { value: stream, done } = await reader.read()
+      if (done) break
+      readIncomingStream(stream)
+    }
+  } catch { /* closed */ }
+}
+
+async function readIncomingStream(stream) {
+  const reader = stream.getReader()
+  let leftover = new Uint8Array(0)
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+
+      let data
+      if (leftover.length > 0) {
+        data = new Uint8Array(leftover.length + value.byteLength)
+        data.set(leftover, 0)
+        data.set(value, leftover.length)
+      } else {
+        data = value
+      }
+
+      let pos = 0
+      while (pos + 5 <= data.length) {
+        const view = new DataView(data.buffer, data.byteOffset + pos + 1, 4)
+        const payloadLen = view.getUint32(0, false)
+
+        if (pos + 5 + payloadLen > data.length) break
+
+        bytesReceived += 5 + payloadLen
+        pos += 5 + payloadLen
+      }
+
+      leftover = pos < data.length ? data.slice(pos) : new Uint8Array(0)
+    }
+  } catch { /* closed */ }
+}
+
+// ─── Отправка данных ───
 let sending = false
 
 async function startDataExchange() {
@@ -279,9 +316,9 @@ async function startDataExchange() {
   metricsTimer = setInterval(updateMetrics, 500)
 
   const requestedChunkSize = Math.min(
-	Math.max(parseInt(document.getElementById('chunkSize').value) || 1000, 64),
-	1200
-	)
+  Math.max(parseInt(document.getElementById('chunkSize').value) || 4096, 64),
+  1048576
+  )
   const chunkSize = maxDatagramSize ? Math.min(requestedChunkSize, Math.max(64, maxDatagramSize - 1)) : requestedChunkSize
   const intervalMs = Math.min(
     Math.max(parseInt(document.getElementById('intervalMs').value) || 100, 10),
@@ -289,27 +326,28 @@ async function startDataExchange() {
   )
 
   if (chunkSize !== requestedChunkSize) {
-    logMsg(`Размер чанка уменьшен до ${formatBytes(chunkSize)} по maxDatagramSize`)
+    logMsg(`Размер чанка уменьшен до ${formatBytes(chunkSize)} по maxDatagramSize`) 
   }
 
-  logMsg(`Отправка datagrams: ${formatBytes(chunkSize)} каждые ${intervalMs} мс`)
+  logMsg(`Отправка: ${formatBytes(chunkSize)} каждые ${intervalMs} мс`)
 
   sending = true
   ;(async function sendLoop() {
+    const payload = new Uint8Array(chunkSize)
+    const header = new Uint8Array(5)
+    header[0] = MEDIA_VIDEO
+    new DataView(header.buffer).setUint32(1, chunkSize, false)
+
     while (sending) {
       try {
-        // [type 1B][random payload]
-        const msg = new Uint8Array(1 + chunkSize)
-        msg[0] = MEDIA_VIDEO
-        crypto.getRandomValues(msg.subarray(1))
-        if (trySendDatagram(msg)) {
-          bytesSent += msg.byteLength
-        }
+        crypto.getRandomValues(payload)
+        await mediaWriter.write(header)
+        await mediaWriter.write(payload)
+        bytesSent += 5 + payload.byteLength
         if (intervalMs > 0) {
           await new Promise(r => setTimeout(r, intervalMs))
         }
-      } catch (err) {
-        logMsg('<span style="color:#f66">Send error: ' + (err.message || err) + '</span>')
+      } catch {
         sending = false
       }
     }
@@ -321,7 +359,6 @@ function cleanup() {
   if (keepAliveTimer) { clearInterval(keepAliveTimer); keepAliveTimer = null }
   sending = false
   if (metricsTimer)   { clearInterval(metricsTimer);   metricsTimer = null }
-  maxDatagramSize = null
   updateMetrics()
   setStatus('Отключено')
   document.getElementById('connectBtn').disabled = false
@@ -330,7 +367,10 @@ function cleanup() {
 
 async function stopTest() {
   sending = false
+	maxDatagramSize = null
 
+  try { if (mediaWriter)    { await mediaWriter.close();    mediaWriter = null } }
+  catch { /* ignore */ }
   try { if (datagramWriter) { await datagramWriter.close(); datagramWriter = null } }
   catch { /* ignore */ }
   try { if (transport)      { transport.close();            transport = null } }
