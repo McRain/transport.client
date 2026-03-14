@@ -99,7 +99,6 @@ const MEDIA_VIDEO      = 0x10
 let transport = null
 let datagramWriter = null
 let keepAliveTimer = null
-let sendInterval = null
 let metricsTimer = null
 let startTime = null
 let bytesSent = 0
@@ -277,6 +276,8 @@ async function readIncomingStream(stream) {
 }
 
 // ─── Отправка данных ───
+let sending = false
+
 async function startDataExchange() {
   startTime = Date.now()
   bytesSent = 0
@@ -298,30 +299,33 @@ async function startDataExchange() {
 
   logMsg(`Отправка: ${formatBytes(chunkSize)} каждые ${intervalMs} мс`)
 
-  sendInterval = setInterval(async () => {
-    try {
-      const payload = new Uint8Array(chunkSize)
-      crypto.getRandomValues(payload)
+  sending = true
+  ;(async function sendLoop() {
+    const payload = new Uint8Array(chunkSize)
+    const header = new Uint8Array(5)
+    header[0] = MEDIA_VIDEO
+    new DataView(header.buffer).setUint32(1, chunkSize, false)
 
-      const header = new Uint8Array(5)
-      header[0] = MEDIA_VIDEO
-      new DataView(header.buffer).setUint32(1, payload.byteLength, false)
-
-      await mediaWriter.write(header)
-      await mediaWriter.write(payload)
-
-      bytesSent += 5 + payload.byteLength
-    } catch {
-      clearInterval(sendInterval)
-      sendInterval = null
+    while (sending) {
+      try {
+        crypto.getRandomValues(payload)
+        await mediaWriter.write(header)
+        await mediaWriter.write(payload)
+        bytesSent += 5 + payload.byteLength
+        if (intervalMs > 0) {
+          await new Promise(r => setTimeout(r, intervalMs))
+        }
+      } catch {
+        sending = false
+      }
     }
-  }, intervalMs)
+  })()
 }
 
 // ─── Cleanup / disconnect ───
 function cleanup() {
   if (keepAliveTimer) { clearInterval(keepAliveTimer); keepAliveTimer = null }
-  if (sendInterval)   { clearInterval(sendInterval);   sendInterval = null }
+  sending = false
   if (metricsTimer)   { clearInterval(metricsTimer);   metricsTimer = null }
   updateMetrics()
   setStatus('Отключено')
@@ -330,7 +334,7 @@ function cleanup() {
 }
 
 async function stopTest() {
-  if (sendInterval) { clearInterval(sendInterval); sendInterval = null }
+  sending = false
 
   try { if (mediaWriter)    { await mediaWriter.close();    mediaWriter = null } }
   catch { /* ignore */ }
