@@ -61,7 +61,7 @@
   </div>
   <div>
     <label>Размер чанка (байт):</label><br>
-    <input id="chunkSize" class="small" type="number" value="4096" min="64" max="1048576">
+    <input id="chunkSize" class="small" type="number" value="1000" min="64" max="1200">
   </div>
   <div>
     <label>Интервал (мс):</label><br>
@@ -103,7 +103,6 @@ let metricsTimer = null
 let startTime = null
 let bytesSent = 0
 let bytesReceived = 0
-let mediaWriter = null
 
 // ─── UI helpers ───
 function logMsg(msg) {
@@ -159,9 +158,8 @@ async function startTest() {
       catch { /* closed */ }
     }, 3_000)
 
-    // Слушаем datagram-ы и входящие стримы
+    // Слушаем datagram-ы (управление + данные от пира)
     listenDatagrams()
-    listenIncomingStreams()
 
     // При закрытии соединения
     transport.closed.then(() => {
@@ -203,6 +201,8 @@ function handleDatagram(data) {
   const decoder = new TextDecoder()
 
   switch (type) {
+    case MSG_KEEPALIVE:
+      break
     case MSG_CALL_CREATED: {
       const key = decoder.decode(data.slice(1, 13))
       logMsg('Комната создана, ключ: <b>' + key + '</b>')
@@ -211,7 +211,7 @@ function handleDatagram(data) {
     }
     case MSG_CALL_READY: {
       logMsg('<b>Оба участника подключены — старт обмена!</b>')
-      setStatus('Активный обмен данными')
+      setStatus('Активный обмен данными (через datagrams)')
       startDataExchange()
       break
     }
@@ -226,56 +226,16 @@ function handleDatagram(data) {
       setStatus('Ошибка: ' + msg)
       break
     }
+    default: {
+      // Данные от пира (type >= 0x10)
+      if (type >= 0x10) {
+        bytesReceived += data.byteLength
+      }
+    }
   }
 }
 
-// ─── Incoming streams (получение данных) ───
-async function listenIncomingStreams() {
-  const reader = transport.incomingUnidirectionalStreams.getReader()
-  try {
-    while (true) {
-      const { value: stream, done } = await reader.read()
-      if (done) break
-      readIncomingStream(stream)
-    }
-  } catch { /* closed */ }
-}
-
-async function readIncomingStream(stream) {
-  const reader = stream.getReader()
-  let leftover = new Uint8Array(0)
-
-  try {
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-
-      let data
-      if (leftover.length > 0) {
-        data = new Uint8Array(leftover.length + value.byteLength)
-        data.set(leftover, 0)
-        data.set(value, leftover.length)
-      } else {
-        data = value
-      }
-
-      let pos = 0
-      while (pos + 5 <= data.length) {
-        const view = new DataView(data.buffer, data.byteOffset + pos + 1, 4)
-        const payloadLen = view.getUint32(0, false)
-
-        if (pos + 5 + payloadLen > data.length) break
-
-        bytesReceived += 5 + payloadLen
-        pos += 5 + payloadLen
-      }
-
-      leftover = pos < data.length ? data.slice(pos) : new Uint8Array(0)
-    }
-  } catch { /* closed */ }
-}
-
-// ─── Отправка данных ───
+// ─── Отправка данных через datagrams ───
 let sending = false
 
 async function startDataExchange() {
@@ -285,33 +245,27 @@ async function startDataExchange() {
 
   metricsTimer = setInterval(updateMetrics, 500)
 
-  const stream = await transport.createUnidirectionalStream()
-  mediaWriter = stream.getWriter()
-
   const chunkSize = Math.min(
-    Math.max(parseInt(document.getElementById('chunkSize').value) || 4096, 64),
-    1048576
+    Math.max(parseInt(document.getElementById('chunkSize').value) || 1000, 64),
+    1200
   )
   const intervalMs = Math.min(
     Math.max(parseInt(document.getElementById('intervalMs').value) || 100, 10),
     5000
   )
 
-  logMsg(`Отправка: ${formatBytes(chunkSize)} каждые ${intervalMs} мс`)
+  logMsg(`Отправка datagrams: ${formatBytes(chunkSize)} каждые ${intervalMs} мс`)
 
   sending = true
   ;(async function sendLoop() {
-    const payload = new Uint8Array(chunkSize)
-    const header = new Uint8Array(5)
-    header[0] = MEDIA_VIDEO
-    new DataView(header.buffer).setUint32(1, chunkSize, false)
-
     while (sending) {
       try {
-        crypto.getRandomValues(payload)
-        await mediaWriter.write(header)
-        await mediaWriter.write(payload)
-        bytesSent += 5 + payload.byteLength
+        // [type 1B][random payload]
+        const msg = new Uint8Array(1 + chunkSize)
+        msg[0] = MEDIA_VIDEO
+        crypto.getRandomValues(msg.subarray(1))
+        await datagramWriter.write(msg)
+        bytesSent += msg.byteLength
         if (intervalMs > 0) {
           await new Promise(r => setTimeout(r, intervalMs))
         }
@@ -336,8 +290,6 @@ function cleanup() {
 async function stopTest() {
   sending = false
 
-  try { if (mediaWriter)    { await mediaWriter.close();    mediaWriter = null } }
-  catch { /* ignore */ }
   try { if (datagramWriter) { await datagramWriter.close(); datagramWriter = null } }
   catch { /* ignore */ }
   try { if (transport)      { transport.close();            transport = null } }
